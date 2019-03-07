@@ -1,20 +1,16 @@
 import numpy as np
 import cv2 as cv
+import random as rng
 
 def getMarkerPositions(rawImg,centresImg):
     if rawImg.any() == None:
         print("No image Found\n")
         exit(1)
-    #else:
-        #print("Image Loaded")
-    #cv.imshow('raw',rawImg)
-
 
     hsvImg = cv.cvtColor(rawImg, cv.COLOR_BGR2HSV)
-    lower_red = np.array([0,220,85])
-    upper_red = np.array([255,255,255])
+    lower_red = np.array([110,0,0])
+    upper_red = np.array([120,255,255])
     filteredHsvImg = cv.inRange(hsvImg, lower_red, upper_red)
-    #cv.imshow('filtered HSV',filteredHsvImg)
 
     kernel = np.ones((3,3),np.uint8)
     erodedImg = cv.erode(filteredHsvImg,kernel,iterations = 1)
@@ -33,7 +29,7 @@ def getMarkerPositions(rawImg,centresImg):
     # where contours is a vector of a vector of points in c++
     areas = []
     momentsList = []
-    areaThreshold = 80
+    areaThreshold = 50
 
     for cont in contours:
         if cv.contourArea(cont) > areaThreshold:
@@ -42,8 +38,8 @@ def getMarkerPositions(rawImg,centresImg):
 
     centres = []
     distThreshold = 10
-    #centresImg = np.zeros(rawImg.shape)
-    centresImg = rawImg.copy()
+    finalCentresImg = np.zeros(rawImg.shape)
+    #centresImg = rawImg.copy()
     for M in momentsList:
         tempCent = np.array([int(M['m10']/M['m00']),int(M['m01']/M['m00'])])
         toBeAdded = True
@@ -56,21 +52,23 @@ def getMarkerPositions(rawImg,centresImg):
 
             if toBeAdded == True:
                 centres.append(tempCent)
-            #    cv.circle(centresImg,tuple(tempCent), 10, (0,0,0), 1)
+                cv.circle(finalCentresImg,tuple(tempCent), 5, (0,255,0), 5)
+                print("adding circle")
 
         else:
             centres.append(tempCent)
-            #cv.circle(centresImg,tuple(tempCent), 10, (0,0,0), 1)
-    cv.imshow('centresImg',centresImg)
+            cv.circle(finalCentresImg,tuple(tempCent), 5, (0,255,0), 5)
+            print("adding circle")
+    #cv.imshow('finalCentresImg',finalCentresImg)
 
     print("Found {} markers".format(len(centres)))
     return centres
 
 def getRobotPositions(centres):
     robotPositions = np.array([]) # create numpy array to store robot positions
-    maxabNorm = 300
-    minabNorm = 100
-    cDevThreshold = 30
+    maxabNorm = 50
+    minabNorm = 10
+    cDevThreshold = 10
 
     centresAllocated = np.zeros((1,len(centres)))
     #print(centres)
@@ -88,8 +86,8 @@ def getRobotPositions(centres):
                     if abNorm > maxabNorm or abNorm < minabNorm: # ie if its larger or smaller than expected
                         continue # ie begin loop on next b candidate
                     abOrth = np.array([-ab[1],ab[0]])
-                    cEst0 = (0.5*ab+a) + 1.044*abOrth # get estimates for positions of third marker
-                    cEst1 = (0.5*ab+a) - 1.044*abOrth
+                    cEst0 = (0.5*ab+a) + 1.33*abOrth # get estimates for positions of third marker
+                    cEst1 = (0.5*ab+a) - 1.33*abOrth
                     bestMatch = 0
                     bestMatchIndex = 0
                     smallestDist = 10000
@@ -111,6 +109,7 @@ def getRobotPositions(centres):
 
                         centroid = np.mean(ab_c,axis=0)[0]
                         ab2c = bestMatch-(0.5*ab+a)
+                        print("ab2c: {}".format(ab2c))
                         conv = np.array([[1,0],[0,1j]])
                         angle = np.angle(np.sum(np.matmul(ab2c,conv)),deg=False)
                         if robotPositions.shape == (0,):
@@ -133,3 +132,58 @@ def getRobotPositions(centres):
                         centresAllocated[bIndex] = 1
                         centresAllocated[bestMatchIndex] = 1
     return robotPositions
+
+def getObjectPerimeters(rawImg, pathPointResolution):
+    #rawImg = cv.blur(rawImg, (11,11)) # uncomment potentially?
+    #cv.imshow('inputImg',rawImg)
+    hsvImg = cv.cvtColor(rawImg, cv.COLOR_BGR2HSV)
+    #cv.imshow('un-filteredHsvImg',hsvImg)
+    lower_red = np.array([0,0,0])
+    upper_red = np.array([255,255,10])
+    filteredHsvImg = cv.inRange(hsvImg, lower_red, upper_red)
+    #cv.imshow('filteredHsvImg',filteredHsvImg)
+    filteredHsvImg = (255 - filteredHsvImg);
+    kernel = np.ones((3,3),np.uint8)
+    erodedImg = cv.erode(filteredHsvImg,kernel,iterations = 1)
+    dilatedImg = cv.dilate(erodedImg,kernel,iterations = 3)
+    dilatedImg = cv.blur(dilatedImg, (3,3)) # uncomment potentially?
+    low_threshold = 0
+    ratio = 3
+    kernel_size = 3
+    canny_edImg = cv.Canny(dilatedImg, low_threshold, low_threshold*ratio, kernel_size)
+    contours, hierarchy = cv.findContours(canny_edImg, cv.RETR_TREE, cv.CHAIN_APPROX_NONE)
+    contourImg = np.zeros(rawImg.shape)
+    cv.drawContours(contourImg, contours, -1, (0,0,255), 3)
+    #cv.imshow('contourImg',contourImg)
+    #print(type(contours))
+    #print("contours: {}".format(hierarchy))
+    #print("hierarchy: {}".format(hierarchy))
+    hull_list = []
+    for i in range(len(contours)):
+        hull = cv.convexHull(contours[i])
+        hull_list.append(hull)
+    print(type(hull_list[0]))
+
+    drawing = np.zeros(rawImg.shape,dtype=np.uint8)
+    amendedHull_list = []
+    for h in hull_list:
+        print(h.shape)
+        points,height,coordNum = h.shape
+        lastX = h.item(points-1,0,0)
+        lastY = h.item(points-1,0,1)
+        for p in range(points):
+            x = h.item(p,0,0)
+            y = h.item(p,0,1)
+            cv.circle(drawing,(x,y), 2, (0,255,0), 1)
+            if ((x-lastX)**2 + (y-lastY)**2)**0.5 > pathPointResolution:
+                #find distvector
+                # divide into equal units, where dist between < maxdistresolution
+                # make new list of points
+        #color = (rng.randint(0,256), rng.randint(0,256), rng.randint(0,256))
+        #cv.drawContours(drawing, contours, i, color)
+        #cv.drawContours(drawing, hull_list, i, color)
+    #cv.imshow('drawing',drawing)
+
+
+
+    return drawing
