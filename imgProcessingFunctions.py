@@ -1,6 +1,8 @@
 import numpy as np
 import cv2 as cv
 import random as rng
+import math
+from scipy import interpolate
 
 def getMarkerPositions(rawImg,centresImg):
     if rawImg.any() == None:
@@ -53,15 +55,15 @@ def getMarkerPositions(rawImg,centresImg):
             if toBeAdded == True:
                 centres.append(tempCent)
                 cv.circle(finalCentresImg,tuple(tempCent), 5, (0,255,0), 5)
-                print("adding circle")
+                #print("adding circle")
 
         else:
             centres.append(tempCent)
             cv.circle(finalCentresImg,tuple(tempCent), 5, (0,255,0), 5)
-            print("adding circle")
+            #print("adding circle")
     #cv.imshow('finalCentresImg',finalCentresImg)
 
-    print("Found {} markers".format(len(centres)))
+    #print("Found {} markers".format(len(centres)))
     return centres
 
 def getRobotPositions(centres):
@@ -71,10 +73,9 @@ def getRobotPositions(centres):
     cDevThreshold = 10
 
     centresAllocated = np.zeros((1,len(centres)))
-    #print(centres)
-    #print(centresAllocated)
+
     centresAllocated = centresAllocated[0]
-    #print(centresAllocated)
+
     for aIndex in range(len(centres)):
         if centresAllocated[aIndex] == 0: # ie if we havent allocated it yet
             a = centres[aIndex]
@@ -109,7 +110,7 @@ def getRobotPositions(centres):
 
                         centroid = np.mean(ab_c,axis=0)[0]
                         ab2c = bestMatch-(0.5*ab+a)
-                        print("ab2c: {}".format(ab2c))
+                        #print("ab2c: {}".format(ab2c))
                         conv = np.array([[1,0],[0,1j]])
                         angle = np.angle(np.sum(np.matmul(ab2c,conv)),deg=False)
                         if robotPositions.shape == (0,):
@@ -134,14 +135,10 @@ def getRobotPositions(centres):
     return robotPositions
 
 def getObjectPerimeters(rawImg, pathPointResolution):
-    #rawImg = cv.blur(rawImg, (11,11)) # uncomment potentially?
-    #cv.imshow('inputImg',rawImg)
     hsvImg = cv.cvtColor(rawImg, cv.COLOR_BGR2HSV)
-    #cv.imshow('un-filteredHsvImg',hsvImg)
-    lower_red = np.array([0,0,0])
-    upper_red = np.array([255,255,10])
-    filteredHsvImg = cv.inRange(hsvImg, lower_red, upper_red)
-    #cv.imshow('filteredHsvImg',filteredHsvImg)
+    lower = np.array([0,0,0])
+    upper = np.array([255,255,10])
+    filteredHsvImg = cv.inRange(hsvImg, lower, upper)
     filteredHsvImg = (255 - filteredHsvImg);
     kernel = np.ones((3,3),np.uint8)
     erodedImg = cv.erode(filteredHsvImg,kernel,iterations = 1)
@@ -154,36 +151,68 @@ def getObjectPerimeters(rawImg, pathPointResolution):
     contours, hierarchy = cv.findContours(canny_edImg, cv.RETR_TREE, cv.CHAIN_APPROX_NONE)
     contourImg = np.zeros(rawImg.shape)
     cv.drawContours(contourImg, contours, -1, (0,0,255), 3)
-    #cv.imshow('contourImg',contourImg)
-    #print(type(contours))
-    #print("contours: {}".format(hierarchy))
-    #print("hierarchy: {}".format(hierarchy))
+
     hull_list = []
     for i in range(len(contours)):
         hull = cv.convexHull(contours[i])
-        hull_list.append(hull)
-    print(type(hull_list[0]))
+        length,a,b = hull.shape
+        hull = hull.reshape(length,b)
+        xLast = hull.item((length-1,0))
+        yLast = hull.item((length-1,1))
+        hull_copy = hull.copy()
+        index = 0
+        for p in range(length):
+            x = hull.item((p,0))
+            y = hull.item((p,1))
+            diffVect = np.array([x-xLast,y-yLast])
+            if np.linalg.norm(diffVect) > pathPointResolution:
+                print("Last x: {} and last y: {}".format(xLast,yLast))
+                print("x: {} and y: {}".format(x,y))
+                newPointsRequired = math.ceil(np.linalg.norm(diffVect) / pathPointResolution)
+                newPoints = np.array([-1])
+                ros = 0
+                if abs(diffVect.item(0)) > abs(diffVect.item(1)): # ie if the x difference magnitude is greater than the y. this prevents singularities
+                    print("X Mode")
+                    xnew = np.arange(xLast, x, ((x-xLast)/newPointsRequired))
+                    fx = interpolate.interp1d(np.array([xLast,x]), np.array([yLast,y]))
+                    ynew = fx(xnew)
+                    rows = xnew.shape[0]
+                    newPoints = np.concatenate((xnew.reshape(rows,1),ynew.reshape(rows,1)))
+                    newPoints = newPoints[1:,:]
+                    print("newPoints")
+                    print(newPoints)
+                    print(" ")
+                else:
+                    print("Y Mode")
+                    ynew = np.arange(yLast, y, ((y-yLast)/newPointsRequired))
+                    fy = interpolate.interp1d(np.array([yLast,y]), np.array([xLast,x]))
+                    xnew = fy(ynew)
+                    rows = xnew.shape[0]
+                    newPoints = np.concatenate((xnew.reshape(rows,1),ynew.reshape(rows,1)),axis=1)
+                    newPoints = newPoints[1:,:]
+                    print("newPoints")
+                    print(newPoints)
+                    print(" ")
+                # by this point we have new points ready to insert
+                print("###############pre-insertion::")
+                print("#####hull_copy")
+                print(hull_copy)
+                print("#####newPoints")
+                print(newPoints)
+                hull_copy = np.insert(hull_copy, index,newPoints,axis=0)
+                print("###############post-insertion::")
+                print("#####hull_copy")
+                print(hull_copy)
+                index = index + rows
+            index = index + 1
+            xLast = x
+            yLast = y
+        hull_list.append(hull_copy)
+        length,b = hull_copy.shape
+        for p in range(length):
+            x = hull_copy.item((p,0))
+            y = hull_copy.item((p,1))
+            cv.circle(rawImg,(x,y), 2, (0,255,0), 1)
 
-    drawing = np.zeros(rawImg.shape,dtype=np.uint8)
-    amendedHull_list = []
-    for h in hull_list:
-        print(h.shape)
-        points,height,coordNum = h.shape
-        lastX = h.item(points-1,0,0)
-        lastY = h.item(points-1,0,1)
-        for p in range(points):
-            x = h.item(p,0,0)
-            y = h.item(p,0,1)
-            cv.circle(drawing,(x,y), 2, (0,255,0), 1)
-            if ((x-lastX)**2 + (y-lastY)**2)**0.5 > pathPointResolution:
-                #find distvector
-                # divide into equal units, where dist between < maxdistresolution
-                # make new list of points
-        #color = (rng.randint(0,256), rng.randint(0,256), rng.randint(0,256))
-        #cv.drawContours(drawing, contours, i, color)
-        #cv.drawContours(drawing, hull_list, i, color)
-    #cv.imshow('drawing',drawing)
-
-
-
-    return drawing
+    cv.imshow('rawImg',rawImg)
+    return hull_list # finito!
